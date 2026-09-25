@@ -96,6 +96,44 @@ def test_gateway_authorization_is_bound_only_for_external_turns():
         runner._clear_session_env(internal)
 
 
+def test_plugin_tool_dispatch_sees_only_authorized_external_source(tmp_path, monkeypatch):
+    import json
+
+    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+    from tools.registry import registry
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    manager = PluginManager()
+    plugin = PluginContext(PluginManifest(name="auth_probe", key="auth_probe"), manager)
+    name = "authenticated_source_probe"
+    plugin.register_tool(
+        name=name,
+        toolset="auth_probe",
+        schema={"name": name, "parameters": {"type": "object", "properties": {}}},
+        handler=lambda args: json.dumps({"source": get_authenticated_gateway_source()}),
+    )
+    assert registry.get_entry(name) is not None
+    runner = object.__new__(GatewayRunner)
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="chat-1", user_id="user-1")
+    context = SessionContext(source=source, connected_platforms=[], home_channels={})
+    try:
+        tokens = runner._set_session_env(context)
+        try:
+            assert json.loads(registry.dispatch(name, {}))["source"] is None
+        finally:
+            runner._clear_session_env(tokens)
+        tokens = runner._set_session_env(context, authorized_external=True)
+        try:
+            assert json.loads(registry.dispatch(name, {}))["source"] == [
+                "telegram", "chat-1", "user-1",
+            ]
+        finally:
+            runner._clear_session_env(tokens)
+        assert json.loads(registry.dispatch(name, {}))["source"] is None
+    finally:
+        registry.deregister(name)
+
+
 def test_session_source_uses_contextvars(monkeypatch):
     monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
 
