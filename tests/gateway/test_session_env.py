@@ -8,6 +8,7 @@ from gateway.run import GatewayRunner
 from gateway.session import SessionContext, SessionSource
 from gateway.session_context import (
     get_session_env,
+    get_authenticated_gateway_source,
     set_session_vars,
     clear_session_vars,
     _VAR_MAP,
@@ -70,6 +71,29 @@ def test_set_session_env_sets_contextvars(monkeypatch):
 
     # Clean up
     runner._clear_session_env(tokens)
+
+
+def test_gateway_authorization_is_bound_only_for_external_turns():
+    runner = object.__new__(GatewayRunner)
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="chat-1",
+        chat_type="dm",
+        user_id="user-1",
+    )
+    context = SessionContext(source=source, connected_platforms=[], home_channels={})
+
+    external = runner._set_session_env(context, authorized_external=True)
+    try:
+        assert get_authenticated_gateway_source() == ("telegram", "chat-1", "user-1")
+    finally:
+        runner._clear_session_env(external)
+
+    internal = runner._set_session_env(context, authorized_external=False)
+    try:
+        assert get_authenticated_gateway_source() is None
+    finally:
+        runner._clear_session_env(internal)
 
 
 def test_session_source_uses_contextvars(monkeypatch):
@@ -339,6 +363,7 @@ async def test_run_in_executor_with_context_forwards_args():
         result = await runner._run_in_executor_with_context(add, 3, 7)
     finally:
         runner._shutdown_executor()
+
     assert result == 10
 
 
@@ -393,4 +418,3 @@ async def test_gateway_executor_refuses_resurrection_after_shutdown():
             await runner._run_in_executor_with_context(lambda: "second")
     finally:
         runner._shutdown_executor()
-

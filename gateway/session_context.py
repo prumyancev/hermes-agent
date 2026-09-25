@@ -107,6 +107,13 @@ _SESSION_PROFILE: ContextVar = ContextVar("HERMES_SESSION_PROFILE", default=_UNS
 # propagates that into this contextvar at session-bind time.
 _SESSION_ASYNC_DELIVERY: ContextVar = ContextVar("HERMES_SESSION_ASYNC_DELIVERY", default=_UNSET)
 
+# Bound only by the gateway after authorization of a real inbound event.
+# Never mirror this value into os.environ: plugin tools must fail closed in
+# CLI, cron, internal-event, cleared, and unbound contexts.
+_SESSION_AUTHORIZED_EXTERNAL: ContextVar[bool] = ContextVar(
+    "HERMES_SESSION_AUTHORIZED_EXTERNAL", default=False,
+)
+
 # Cron auto-delivery vars — set per-job in run_job() so concurrent jobs
 # don't clobber each other's delivery targets.
 _CRON_AUTO_DELIVER_PLATFORM: ContextVar = ContextVar("HERMES_CRON_AUTO_DELIVER_PLATFORM", default=_UNSET)
@@ -160,6 +167,7 @@ def set_session_vars(
     profile: str = "",
     cwd: str = "",
     async_delivery: bool = True,
+    authorized_external: bool = False,
 ) -> list:
     """Set all session context variables and return reset tokens.
 
@@ -194,6 +202,7 @@ def set_session_vars(
         _SESSION_MESSAGE_ID.set(message_id),
         _SESSION_PROFILE.set(profile),
         _SESSION_ASYNC_DELIVERY.set(bool(async_delivery)),
+        _SESSION_AUTHORIZED_EXTERNAL.set(authorized_external is True),
     ]
     try:
         from agent.runtime_cwd import set_session_cwd
@@ -234,6 +243,7 @@ def clear_session_vars(tokens: list) -> None:
     # behavior (CLI / unaware paths), not be mistaken for an opted-out
     # stateless adapter.
     _SESSION_ASYNC_DELIVERY.set(_UNSET)
+    _SESSION_AUTHORIZED_EXTERNAL.set(False)
     try:
         from agent.runtime_cwd import clear_session_cwd
 
@@ -282,6 +292,7 @@ def reset_session_vars() -> None:
     # same inheritance-leak reason as the mapped vars above — see clear_session_vars,
     # which resets this var on the handler-exit path for the symmetric concern.
     _SESSION_ASYNC_DELIVERY.set(_UNSET)
+    _SESSION_AUTHORIZED_EXTERNAL.set(False)
     try:
         from agent.runtime_cwd import clear_session_cwd
 
@@ -314,6 +325,22 @@ def get_session_env(name: str, default: str = "") -> str:
             return value
     # Fall back to os.environ for CLI, cron, and test compatibility
     return os.getenv(name, default)
+
+
+def get_authenticated_gateway_source() -> tuple[str, str, str] | None:
+    """Return (platform, chat ID, user ID) only for an authorized real inbound.
+
+    This does not use the environment fallback. Synthetic/internal events can
+    carry source IDs but are never authorized external turns.
+    """
+    if _SESSION_AUTHORIZED_EXTERNAL.get() is not True:
+        return None
+    platform = _SESSION_PLATFORM.get()
+    chat_id = _SESSION_CHAT_ID.get()
+    user_id = _SESSION_USER_ID.get()
+    if not isinstance(platform, str) or not platform or not isinstance(chat_id, str) or not chat_id:
+        return None
+    return platform, chat_id, user_id if isinstance(user_id, str) else ""
 
 
 def async_delivery_supported() -> bool:
